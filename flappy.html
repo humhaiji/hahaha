@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Flappy Bird — Stable Build</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { margin: 0; height: 100%; background: #222; font-family: system-ui, sans-serif; }
+    canvas { display: block; margin: auto; background: #4ec0ca; box-shadow: 0 12px 40px rgba(0,0,0,.35); border-radius: 12px; }
+    .hud { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); color: #fff; text-align: center; font-weight: 700; text-shadow: 0 2px 6px rgba(0,0,0,.35); user-select: none; pointer-events: none; }
+    .hud .line { font-size: 18px; }
+    .hud .title { font-size: 22px; margin-top: 4px; opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="420" height="800"></canvas>
+  <div class="hud">
+    <div class="line" id="score">Score: 0</div>
+    <div class="title" id="msg">Click / Tap / Space to flap</div>
+  </div>
+
+  <!-- Background music (plays after first click/keypress) -->
+  <audio id="bgMusic" src="asd.mp3" loop></audio>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const msgEl = document.getElementById('msg');
+
+    // Bird image (optional)
+    const birdImg = new Image();
+    birdImg.src = "bird.png";
+    let birdImgReady = false;
+    birdImg.onload = () => { birdImgReady = true; };
+
+    // Music
+    const bgMusic = document.getElementById('bgMusic');
+    bgMusic.volume = 0.5;
+    const startMusic = () => {
+      bgMusic.play().catch(err => console.log("Audio blocked:", err));
+      document.removeEventListener('click', startMusic);
+      document.removeEventListener('keydown', startMusic);
+      document.removeEventListener('touchstart', startMusic);
+    };
+    document.addEventListener('click', startMusic);
+    document.addEventListener('keydown', startMusic);
+    document.addEventListener('touchstart', startMusic, { passive: true });
+
+    // Game constants
+    const GROUND_H = 100;
+    const GRAVITY = 0.45;
+    const FLAP_V = -7.8;
+    const PIPE_GAP = 160;
+    const PIPE_W = 68;
+    const PIPE_SPACING = 250;
+    const PIPE_SPEED = 2.6;
+    const BIRD_W = 50;
+    const BIRD_H = 50;
+
+    // State
+    let bird, pipes, score, best, gameOver, retryBounds;
+
+    function reset() {
+      bird = { x: 110, y: canvas.height / 2, vy: 0, rot: 0, alive: true, started: false };
+      pipes = [];
+      score = 0;
+      best = Number(localStorage.getItem('flappy_best') || 0);
+      gameOver = false;
+      retryBounds = null;
+      msgEl.textContent = 'Click / Tap / Space to flap';
+      scoreEl.textContent = `Score: ${score}  •  Best: ${best}`;
+      bgMusic.currentTime = 0;
+      bgMusic.play().catch(()=>{});
+    }
+
+    function addPipe() {
+      const topH = Math.random() * (canvas.height - GROUND_H - PIPE_GAP - 100) + 50;
+      const bottomY = topH + PIPE_GAP;
+      const x = canvas.width + 20;
+      pipes.push({ x, topH, bottomY, passed: false });
+    }
+
+    function flap() {
+      if (!bird.alive || gameOver) return;
+      bird.started = true;
+      bird.vy = FLAP_V;
+    }
+
+    // Input
+    window.addEventListener('keydown', (e) => { if (e.code === 'Space' || e.code === 'ArrowUp') flap(); });
+    canvas.addEventListener('mousedown', flap);
+    canvas.addEventListener('touchstart', (e) => { e.preventDefault(); flap(); }, { passive: false });
+
+    function birdRect() {
+      return { x: bird.x - BIRD_W / 2, y: bird.y - BIRD_H / 2, w: BIRD_W, h: BIRD_H };
+    }
+    function rectsOverlap(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    function checkCollision() {
+      const br = birdRect();
+      if (bird.y + BIRD_H / 2 > canvas.height - GROUND_H || bird.y - BIRD_H / 2 < 0) return true;
+      for (const p of pipes) {
+        const topRect = { x: p.x, y: 0, w: PIPE_W, h: p.topH };
+        const bottomRect = { x: p.x, y: p.bottomY, w: PIPE_W, h: canvas.height - GROUND_H - p.bottomY };
+        if (rectsOverlap(br, topRect) || rectsOverlap(br, bottomRect)) return true;
+      }
+      return false;
+    }
+
+    // Drawing
+    function drawPipe(x, topH, bottomY) {
+      // Simple textured effect: base + darker edge
+      ctx.fillStyle = '#4caf50';
+      ctx.fillRect(x, 0, PIPE_W, topH);
+      ctx.fillRect(x, bottomY, PIPE_W, canvas.height - GROUND_H - bottomY);
+      ctx.fillStyle = '#3d8c40';
+      ctx.fillRect(x, topH - 6, PIPE_W, 6);
+      ctx.fillRect(x, bottomY, PIPE_W, 6);
+    }
+
+    function drawBird() {
+      ctx.save();
+      ctx.translate(bird.x, bird.y);
+      ctx.rotate(bird.rot);
+      if (birdImgReady) {
+        ctx.drawImage(birdImg, -BIRD_W / 2, -BIRD_H / 2, BIRD_W, BIRD_H);
+      } else {
+        ctx.fillStyle = '#ffcc00';
+        ctx.beginPath();
+        ctx.arc(0, 0, BIRD_W/2, 0, Math.PI*2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawGround() {
+      ctx.fillStyle = '#ded895';
+      ctx.fillRect(0, canvas.height - GROUND_H, canvas.width, GROUND_H);
+    }
+
+    function drawRetryIcon(x, y, size) {
+      ctx.save();
+      ctx.translate(x + size / 2, y + size / 2);
+      ctx.beginPath();
+      ctx.arc(0, 0, size / 2, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.fill();
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(0, 0, size * 0.28, Math.PI * 0.25, Math.PI * 1.6);
+      ctx.stroke();
+      const angle = Math.PI * 1.6, r = size * 0.28;
+      const ax = r * Math.cos(angle), ay = r * Math.sin(angle);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(ax + 10, ay - 2);
+      ctx.lineTo(ax + 2, ay - 12);
+      ctx.closePath();
+      ctx.fillStyle = '#333';
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Update & render
+    function update(dt) {
+      if (!bird.started || gameOver) return;
+
+      bird.vy += GRAVITY * dt;
+      bird.y += bird.vy * dt;
+      bird.rot = Math.max(-0.5, Math.min(0.5, bird.vy / 12));
+
+      for (const p of pipes) {
+        p.x -= PIPE_SPEED * dt;
+        if (!p.passed && p.x + PIPE_W < bird.x) {
+          p.passed = true;
+          score++;
+          scoreEl.textContent = `Score: ${score}  •  Best: ${best}`;
+        }
+      }
+      pipes = pipes.filter(p => p.x + PIPE_W > -20);
+
+      if (pipes.length === 0 || (canvas.width - pipes[pipes.length - 1].x) >= PIPE_SPACING) addPipe();
+
+      if (checkCollision()) {
+        bird.alive = false;
+        bird.started = false;
+        gameOver = true;
+        best = Math.max(best, score);
+        localStorage.setItem('flappy_best', String(best));
+        bgMusic.pause();
+        bgMusic.currentTime = 0;
+      }
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#4ec0ca';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      for (const p of pipes) drawPipe(p.x, p.topH, p.bottomY);
+      drawBird();
+      drawGround();
+
+      if (gameOver) {
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const iconSize = 88;
+        const iconX = canvas.width / 2 - iconSize / 2;
+        const iconY = canvas.height / 2 - iconSize / 2;
+        drawRetryIcon(iconX, iconY, iconSize);
+        retryBounds = { x: iconX, y: iconY, w: iconSize, h: iconSize };
+        ctx.fillStyle = '#fff';
+        ctx.font = '700 20px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`Game Over — Score: ${score}  •  Best: ${best}`, canvas.width / 2, iconY - 24);
+        ctx.fillText('Click the icon to retry', canvas.width / 2, iconY + iconSize + 28);
+      }
+    }
+
+    // Click to retry
+    canvas.addEventListener('click', (e) => {
+      if (gameOver && retryBounds) {
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+        if (mx >= retryBounds.x && mx <= retryBounds.x + retryBounds.w &&
+            my >= retryBounds.y && my <= retryBounds.y + retryBounds.h) {
+          reset();
+        }
+      }
+    });
+
+    // Loop
+    let lastTime = 0;
+    function loop(ts) {
+      if (!lastTime) lastTime = ts;
+      const dt = Math.min(2.2, (ts - lastTime) / (1000 / 60));
+      lastTime = ts;
+      update(dt);
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    // Boot
+    reset();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
